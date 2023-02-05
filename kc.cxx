@@ -30,7 +30,7 @@ static double NumVal;             // Filled in if tok_number
 static std::istream* input_stream = nullptr;
 
 char GetChar() {
-    return getchar();
+    return input_stream->get();
 }
 
 /// gettok - Return the next token from standard input.
