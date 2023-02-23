@@ -1,2 +1,2 @@
 kc: kc.cxx
-	g++ $^ -o $@
+	g++ $^ `llvm-config --cxxflags` -o $@ `llvm-config --link-shared --libs`
