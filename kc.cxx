@@ -443,9 +443,11 @@ static void HandleTopLevelExpression() {
 }
 
 /// top ::= definition | external | expression | ';'
-static void MainLoop() {
+static void MainLoop(bool using_cin) {
     while (true) {
-        fprintf(stderr, "ready> ");
+        if (using_cin) {
+            fprintf(stderr, "ready> ");
+        }
         switch (CurTok) {
             case tok_eof: {
                 return;
@@ -490,21 +492,25 @@ int main(int argc, char** argv) {
         return -1;
     }
 
-    std::unique_ptr<std::ifstream> if_pointer = nullptr;
-    if (source_filepath != "") {
-        use_stdin = false;
+    std::unique_ptr<std::istream> is_pointer = nullptr;
+    bool using_cin = false;
+    if (source_filepath == "") {
+        using_cin = true;
         input_stream = &std::cin;
     } else {
         // Copy file to if_pointer
-        if_pointer = std::move(std::make_unique<std::ifstream>(source_filepath));
-        input_stream = (std::istream*) if_pointer.get();
+        std::ifstream* ifs = new std::ifstream(source_filepath, std::ifstream::in);
+        is_pointer.reset(static_cast<std::istream*>(ifs));
+        input_stream = is_pointer.get();
     }
 
-    fprintf(stderr, "ready> ");
+    if (using_cin) {
+        fprintf(stderr, "ready> ");
+    }
     getNextToken();
 
     // Run the main "interpreter Loop" now.
-    MainLoop();
+    MainLoop(using_cin);
 
     return 0;
 }
