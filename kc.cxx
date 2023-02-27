@@ -526,9 +526,13 @@ Value* BinaryExprAST::codegen() {
 
 Value* CallExprAST::codegen() {
     // Look up the name in the global module table.
-    Function* CalleeF = TheModule->getFunction(Callee);
+    Function* CalleeF = getFunction(Callee);
     if (!CalleeF) {
-        return LogErrorV("Unknown function referenced");
+        auto res = LogErrorV("Unknown function referenced");
+        for (const auto& func: TheModule->functions()) {
+            std::cout << func.getName().data() << std::endl;
+        }
+        return res;
     }
 
     // If argument mismatch error.
@@ -638,8 +642,18 @@ static void HandleDefinition() {
             fprintf(stderr, "Read function definition:\n");
             FnIR->print(errs());
             fprintf(stderr, "\n");
+            // Check to see if any functions are already defined.
+            for (const auto& func: TheModule->functions()) {
+                std::string func_name = func.getName().str();
+                auto symbol_res = TheJIT->lookup(func_name);
+                if (symbol_res) {
+                    ExitOnErr(TheJIT->remove(func_name));
+                }
+            }
+
             ExitOnErr(TheJIT->addModule(
                 ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
+
             InitializeModuleAndPassManager();
         }
     } else {
@@ -791,9 +805,6 @@ int main(int argc, char** argv) {
 
     // Run the main "interpreter Loop" now.
     MainLoop(using_cin);
-
-    // Print out all of the generated code.
-    TheModule->print(errs(), nullptr);
 
     return 0;
 }

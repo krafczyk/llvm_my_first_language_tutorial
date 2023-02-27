@@ -84,6 +84,11 @@ public:
   Expected<JITEvaluatedSymbol> lookup(StringRef Name) {
     return ES->lookup({&MainJD}, Mangle(Name.str()));
   }
+
+  Error remove(const std::string& Name) {
+    // Remove symbol Name.
+    return MainJD.remove({Mangle(Name)});
+  }
 };
 
 } // end namespace orc
