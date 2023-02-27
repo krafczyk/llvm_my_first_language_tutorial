@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 #include <fstream>
+#include <sstream>
 
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/STLExtras.h"
@@ -392,6 +393,8 @@ static std::unique_ptr<ExprAST> ParseIfExpr() {
         return LogError("expected else");
     }
 
+    getNextToken(); // eat the else
+
     auto Else = ParseExpression();
     if (!Else) {
         return nullptr;
@@ -466,7 +469,9 @@ static std::unique_ptr<ExprAST> ParseForExpr() {
 static std::unique_ptr<ExprAST> ParsePrimary() {
     switch (CurTok) {
         default: {
-            return LogError("unknown token when expecting an expression");
+            std::stringstream ss;
+            ss << "unknown token [" << CurTok << "] when expecting an expression";
+            return LogError(ss.str().c_str());
         }
         case tok_identifier: {
             return ParseIdentifierExpr();
@@ -735,8 +740,7 @@ Value* IfExprAST::codegen() {
     ThenBB = Builder->GetInsertBlock();
 
     // Emit else block.
-    // TODO: Check if this insert function is really necessary
-    //TheFunction->insert(TheFunction->end(), ElseBB);
+    TheFunction->getBasicBlockList().push_back(ElseBB);
     Builder->SetInsertPoint(ElseBB);
 
     Value* ElseV = Else->codegen();
@@ -749,8 +753,7 @@ Value* IfExprAST::codegen() {
     ElseBB = Builder->GetInsertBlock();
 
     // Emit merge block.
-    // TODO: Check for insert function here.
-    //TheFunction->insert(TheFunction->end(), MergeBB);
+    TheFunction->getBasicBlockList().push_back(MergeBB);
     Builder->SetInsertPoint(MergeBB);
     PHINode* PN = 
         Builder->CreatePHI(Type::getDoubleTy(*TheContext), 2, "tftmp");
