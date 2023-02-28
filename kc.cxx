@@ -66,6 +66,8 @@ enum Token {
 static std::string IdentifierStr; // Filled in if tok_identifier
 static double NumVal;             // Filled in if tok_number
 static std::istream* input_stream = nullptr;
+static bool new_file = true;
+static std::vector<std::string> defined_function_names;
 
 char GetChar() {
     return input_stream->get();
@@ -74,6 +76,11 @@ char GetChar() {
 /// gettok - Return the next token from standard input.
 static int gettok() {
     static int LastChar = ' ';
+    if (new_file) {
+        // Reset the last char to allow the gettok to start over.
+        LastChar = ' ';
+        new_file = false;
+    }
 
     // Skip any whitespace.
     while (isspace(LastChar)) {
@@ -193,6 +200,18 @@ class BinaryExprAST: public ExprAST {
         BinaryExprAST(char Op, std::unique_ptr<ExprAST> LHS,
                       std::unique_ptr<ExprAST> RHS)
             : Op(Op), LHS(std::move(LHS)), RHS(std::move(RHS)) {}
+
+        Value* codegen() override;
+};
+
+/// UnaryExprAST - Expression class for a unary operator.
+class UnaryExprAST : public ExprAST {
+    char Opcode;
+    std::unique_ptr<ExprAST> Operand;
+
+    public:
+        UnaryExprAST(char Opcode, std::unique_ptr<ExprAST> Operand)
+            : Opcode(Opcode), Operand(std::move(Operand)) {}
 
         Value* codegen() override;
 };
@@ -515,11 +534,29 @@ static std::unique_ptr<ExprAST> ParsePrimary() {
     }
 }
 
+/// unary
+///   ::= primary
+///   ::= '!' unary
+static std::unique_ptr<ExprAST> ParseUnary() {
+    // If the current token is not an operator, it must be a primary expr.
+    if (!isascii(CurTok) || CurTok == '(' || CurTok == ',') {
+        return ParsePrimary();
+    }
+
+    // If this is a u nary operator, read it.
+    int Opc = CurTok;
+    getNextToken();
+    if (auto Operand = ParseUnary()) {
+        return std::make_unique<UnaryExprAST>(Opc, std::move(Operand));
+    }
+    return nullptr;
+}
+
 
 /// expression
 ///   ::= primary binoprhs
 static std::unique_ptr<ExprAST> ParseExpression() {
-    auto LHS = ParsePrimary();
+    auto LHS = ParseUnary();
     if (!LHS) {
         return nullptr;
     }
@@ -546,7 +583,7 @@ static std::unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec,
         getNextToken(); // eat binop
 
         // Parse the primary expression after the binary operator.
-        auto RHS = ParsePrimary();
+        auto RHS = ParseUnary();
         if (!RHS) {
             return nullptr;
         }
@@ -570,6 +607,8 @@ static std::unique_ptr<ExprAST> ParseBinOpRHS(int ExprPrec,
 
 /// prototype
 ///   ::= id '(' id* ')'
+///   ::= binary LETTER number? (id, id)
+///   ::= unary LETTER (id)
 static std::unique_ptr<PrototypeAST> ParsePrototype() {
     std::string FnName;
 
@@ -583,6 +622,17 @@ static std::unique_ptr<PrototypeAST> ParsePrototype() {
         case tok_identifier: {
             FnName = IdentifierStr;
             Kind = 0;
+            getNextToken();
+            break;
+        }
+        case tok_unary: {
+            getNextToken();
+            if (!isascii(CurTok)) {
+                return LogErrorP("Expected unary operator");
+            }
+            FnName = "unary";
+            FnName += (char) CurTok;
+            Kind = 1;
             getNextToken();
             break;
         }
@@ -706,7 +756,9 @@ Value* VariableExprAST::codegen() {
     // Look this variable up in the function.
     Value* V = NamedValues[Name];
     if (!V) {
-        return LogErrorV("Unknown variable name");
+        std::stringstream ss;
+        ss << "Unknown variable name '" << Name << "'";
+        return LogErrorV(ss.str().c_str());
     }
     return V;
 }
@@ -746,6 +798,23 @@ Value* BinaryExprAST::codegen() {
     Value* Ops[2] = {L, R};
 
     return Builder->CreateCall(F, Ops, "binop");
+}
+
+Value* UnaryExprAST::codegen() {
+    Value* OperandV = Operand->codegen();
+    if (!OperandV) {
+        return nullptr;
+    }
+
+    std::string func_name = std::string("unary")+Opcode;
+    Function* F = getFunction(func_name);
+    if (!F) {
+        std::stringstream ss;
+        ss << "Unknown unary operator: " << func_name;
+        return LogErrorV(ss.str().c_str());
+    }
+
+    return Builder->CreateCall(F, OperandV, "unop");
 }
 
 Value* CallExprAST::codegen() {
@@ -983,10 +1052,15 @@ Function* FunctionAST::codegen() {
 // Top-Level parsing and JIT Driver
 //============
 
+static int num = 1;
+
 static void InitializeModuleAndPassManager() {
     // Open a new context and module.
     TheContext = std::make_unique<LLVMContext>();
-    TheModule = std::make_unique<Module>("my cool jit", *TheContext);
+    std::stringstream ss;
+    ss << "my cool jit " << num;
+    num += 1;
+    TheModule = std::make_unique<Module>(ss.str(), *TheContext);
     TheModule->setDataLayout(TheJIT->getDataLayout());
 
     // Create a new builder for the module.
@@ -1013,13 +1087,12 @@ static void HandleDefinition() {
             fprintf(stderr, "Read function definition:\n");
             FnIR->print(errs());
             fprintf(stderr, "\n");
-            // Check to see if any functions are already defined.
-            for (const auto& func: TheModule->functions()) {
-                std::string func_name = func.getName().str();
-                auto symbol_res = TheJIT->lookup(func_name);
-                if (symbol_res) {
-                    ExitOnErr(TheJIT->remove(func_name));
-                }
+            // Check to see if this function is already defined.
+            std::string func_name = FnIR->getName().str();
+            auto symbol_res = TheJIT->lookup(func_name);
+            if (symbol_res) {
+                std::cout << "WARNING: Removing function symbol '" << func_name << "' from the JIT." << std::endl;
+                ExitOnErr(TheJIT->remove(func_name));
             }
 
             ExitOnErr(TheJIT->addModule(
@@ -1062,7 +1135,7 @@ static void HandleTopLevelExpression() {
             // Search the JIT for the __anon_expr symbol
             auto ExprSymbol = ExitOnErr(TheJIT->lookup("__anon_expr"));
 
-            // Get the symbol's address and cat it to the right type (takes no
+            // Get the symbol's address and cast it to the right type (takes no
             // arguments, returns a double) so we can call it as a native function.
             double (*FP)() = (double (*)())(intptr_t)ExprSymbol.getAddress();
             fprintf(stderr, "Evaluated to %f\n", FP());
@@ -1145,37 +1218,47 @@ int main(int argc, char** argv) {
     BinopPrecedence['*'] = 40; // highest.
 
     auto Parser = ArgParse::ArgParser("Kaleidoscope Compiler");
-    std::string source_filepath = "";
-    Parser.AddArgument("--source", "Path to source file", &source_filepath);
+    std::vector<std::string> source_filepaths = std::vector<std::string>();
+    bool interactive=false;
+    Parser.AddArgument("--source/-s", "Path to source file", &source_filepaths);
+    Parser.AddArgument("--interactive/-i", "Whether to continue in interactive mode.", &interactive);
     if (Parser.ParseArgs(argc, argv) < 0) {
         std::cerr << "Error parsing arguments" << std::endl;
         return -1;
     }
 
-    std::unique_ptr<std::istream> is_pointer = nullptr;
-    bool using_cin = false;
-    if (source_filepath == "") {
-        using_cin = true;
-        input_stream = &std::cin;
-    } else {
-        // Copy file to if_pointer
-        std::ifstream* ifs = new std::ifstream(source_filepath, std::ifstream::in);
-        is_pointer.reset(static_cast<std::istream*>(ifs));
-        input_stream = is_pointer.get();
-    }
-
-    if (using_cin) {
-        fprintf(stderr, "ready> ");
-    }
-    getNextToken();
-
+    // Start up the JIT
     TheJIT = ExitOnErr(KaleidoscopeJIT::Create());
 
     // Make the module, which holds all the code.
     InitializeModuleAndPassManager();
 
-    // Run the main "interpreter Loop" now.
-    MainLoop(using_cin);
+    std::unique_ptr<std::istream> is_pointer = nullptr;
+    for (const auto& source_filepath: source_filepaths) {
+        // Process a source file.
+        new_file = true;
+
+        // Copy file to if_pointer
+        std::ifstream* ifs = new std::ifstream(source_filepath, std::ifstream::in);
+        is_pointer.reset(static_cast<std::istream*>(ifs));
+        input_stream = is_pointer.get();
+
+        getNextToken();
+
+        // Run main "interpreter Loop" on this file.
+        MainLoop(false);
+    }
+
+    if (interactive) {
+        new_file = true;
+        input_stream = &std::cin;
+
+        fprintf(stderr, "ready> ");
+        getNextToken();
+
+        // Run the main "interpreter Loop" now.
+        MainLoop(true);
+    }
 
     return 0;
 }

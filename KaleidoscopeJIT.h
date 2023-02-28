@@ -28,7 +28,7 @@ private:
   RTDyldObjectLinkingLayer ObjectLayer;
   IRCompileLayer CompileLayer;
 
-  JITDylib &MainJD;
+  JITDylib& MainJD;
 
 public:
   KaleidoscopeJIT(std::unique_ptr<ExecutionSession> ES,
@@ -49,14 +49,16 @@ public:
   }
 
   ~KaleidoscopeJIT() {
-    if (auto Err = ES->endSession())
+    if (auto Err = ES->endSession()) {
       ES->reportError(std::move(Err));
+    }
   }
 
   static Expected<std::unique_ptr<KaleidoscopeJIT>> Create() {
     auto EPC = SelfExecutorProcessControl::Create();
-    if (!EPC)
+    if (!EPC) {
       return EPC.takeError();
+    }
 
     auto ES = std::make_unique<ExecutionSession>(std::move(*EPC));
 
@@ -64,8 +66,9 @@ public:
         ES->getExecutorProcessControl().getTargetTriple());
 
     auto DL = JTMB.getDefaultDataLayoutForTarget();
-    if (!DL)
+    if (!DL) {
       return DL.takeError();
+    }
 
     return std::make_unique<KaleidoscopeJIT>(std::move(ES), std::move(JTMB),
                                              std::move(*DL));
@@ -76,8 +79,9 @@ public:
   JITDylib &getMainJITDylib() { return MainJD; }
 
   Error addModule(ThreadSafeModule TSM, ResourceTrackerSP RT = nullptr) {
-    if (!RT)
+    if (!RT) {
       RT = MainJD.getDefaultResourceTracker();
+    }
     return CompileLayer.add(RT, std::move(TSM));
   }
 
