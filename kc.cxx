@@ -189,6 +189,8 @@ class VariableExprAST: public ExprAST {
     public:
         VariableExprAST(const std::string& Name): Name(Name) {}
 
+        const std::string& getName() const { return Name; }
+
         Value* codegen() override;
 };
 
@@ -773,6 +775,32 @@ Value* VariableExprAST::codegen() {
 }
 
 Value* BinaryExprAST::codegen() {
+    // Special case '=' because we don't want to emit the LHS as an expression.
+    if (Op == '=') {
+        // This assumes we're building without RTTI because LLVM builds that way by
+        // default. If you build LLVM with RTTI this can be changed to a
+        // dynamic_cast for automatic error checking.
+        VariableExprAST* LHSE = static_cast<VariableExprAST*>(LHS.get());
+        if (!LHSE) {
+            LogErrorV("destination of '=' must be a variable");
+        }
+
+        // Codegen the RHS.
+        Value* Val = RHS->codegen();
+        if (!Val) {
+            return nullptr;
+        }
+
+        // Look up the name.
+        Value* Variable = NamedValues[LHSE->getName()];
+        if (!Variable) {
+            return LogErrorV("Unknown variable name");
+        }
+
+        Builder->CreateStore(Val, Variable);
+        return Val;
+    }
+
     Value* L = LHS->codegen();
     Value* R = RHS->codegen();
     if (!L || !R) {
@@ -1231,6 +1259,7 @@ int main(int argc, char** argv) {
 
     // Install standard binary operators.
     // 1 is Lowest precedence.
+    BinopPrecedence['='] = 2;
     BinopPrecedence['<'] = 10;
     BinopPrecedence['+'] = 20;
     BinopPrecedence['-'] = 20;
